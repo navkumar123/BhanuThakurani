@@ -1,0 +1,215 @@
+<!-- doxy
+\page refdocDetectorSimulation Detector Simulation
+/doxy -->
+
+# Detector simulation documentation
+
+The present document collects information about the ALICE detector simulation executable and digitization procedure used in LHC Run3.
+
+## Overview
+
+Detector simulation, the simulation of detector response from virtual particle events, consists of essentialy 2 parts:
+  a) the generation of simple (energy deposit) traces in the detector due to the passage of particles and the interaction with the detector material.
+  b) the conversion of those traces into (electronic) signals in the detector readout (usually called digitization).
+ 
+The first part is handled by the `o2-sim` executable (See [SimSection](#SimSection)). The second part is handled in the `o2-sim-digitizer-workflow` executable (See [DigitSection](#DigitSection)). References to examples are [collected here](#Examples).
+
+## Key new features with respect to AliRoot
+
+The Run3 simulation offers the following features
+
+  - **distributed system based on FairMQ** that is splitting event generation, particle transport and IO into separate asyncronous components that can be deployed on different machines
+  - **sub-event parallelism** making it possible to transport a single big event in a short time and to reduce memory consumption
+  - **parallelism** independent on transport engine
+  - **configuration via pre-defined parameter classes and ini/text files**
+  - **clear separation of transport and digitization** - each phase can be run fully independently
+
+
+# Documentation of transport simulation <a name="SimSection"></a>
+
+The purpose of the `o2-sim` executable is to simulate the passage of particles emerging from a collision inside the detector and to obtain their effect in terms of energy deposits (called hits) which could be converted into detectable signals. It is the driver executable which will spawn a topology of sub-processes that interact via messages in a distributed system.
+
+## Usage overview
+* **Quick start example:** A typical (exemplary) invocation is of the form 
+
+    ```o2-sim -n 10 -g pythia8pp -e TGeant4 -j 2 --skipModules ZDC,PHS``` 
+
+    which would launch a simulation for 10 pythia8 events on the whole ALICE detector but ZDC and PHOS, using Geant4 on 2 parallel worker processes.
+* **Generated output**: The simulation creates the following output files:
+     
+| File                  | Description                                                                            |
+| --------------------- | -------------------------------------------------------------------------------------- |
+| `o2sim_Kine.root`     | contains kinematics information (primaries and secondaries) and event meta information |
+| `o2sim_geometry.root` | contains the final ROOT geometry created for simulation run                            |
+| `o2sim_grp.root`      | special global run parameters (grp) such as field                                      |
+| `o2sim_XXXHits.root`  | hit file for each participating active detector XXX                                    |
+| `o2sim_configuration.ini` | summary of parameter values with which the simulation was done                     |
+| `o2sim_serverlog` | log file produced from the particle generator server |
+| `o2sim_workerlog` | log file produced form the transportation processes |
+| `o2sim_hitmergerlog` | log file produced from the IO process |
+
+
+* **Main command line options**: The following major options are available (incomplete):
+
+| Option                | Description                                                                            |
+| --------------------- | -------------------------------------------------------------------------------------- |
+| -h,--help     | Prints the list of possible command line options and their default values.           |
+| -n,--number | The number of events to simulate.                                                       |
+| -g,--generator | name of a predefined generator template to use (such as pythia8pp, pythia8hi). Configuration of generations is explained in a dedicated section. |
+| -e,--engine | Select the VMC transport engine (TGeant4, TGeant3).                                     |
+| -m,--modules | List of modules/geometries to include (default is ALL); example -m PIPE ITS TPC       |
+| -j,--nworkers | Number of parallel simulation engine workers (default is half the number of hyperthread CPU cores) |
+| --chunkSize | Size of a sub-event. This determines how many primary tracks will be sent to a simulation worker to process. |
+| --skipModules | List of modules to skip / not to include (precedence over -m) |
+| --configFile   | A `.ini` file containing a list of (non-default) parameters to configure the simulation run. See section on configurable parameters for more details.  |
+| --configKeyValues | Like `--configFile` but allowing to set parameters on the command line as a string sequence. Example `--configKeyValues "Stack.pruneKine=false"`. Takes precedence over `--configFile`. Parameters need to be known ConfigurableParams. |
+| --seed   | The initial seed to (all) random number instances. Default is -1 which leads to random behaviour. |
+| -o,--outPrefix | How output files should be prefixed. Default is o2sim. Example `-o mySignalProduction`.|
+| --noGeant | Switch off Geant transport. Just produce the generator kinematics. |
+
+* **Expert control** via environment variables:
+`o2-sim` is sensitive to the following environment variables:
+
+| Variable | Description |
+| --- | --- |
+| **ALICE_O2SIM_DUMPLOG** | When set, the output of all FairMQ components will be shown on the screen and can be piped into a user logfile. |  
+| **ALICE_NOSIMSHM** | When set, communication between simulation processes will not happen using a shared memory mechanism but using ROOT serialization. |
+
+
+## Configurable Parameters
+
+Simulation makes use of `configurable parameters` as described in the [ConfigurableParam.md](https://github.com/AliceO2Group/AliceO2/blob/dev/Common/SimConfig/doc/ConfigurableParam.md) documentation.
+Detector code as well as general simulation code declare such parameter and access them during runtime. 
+Once a parameter is declared, it can be influenced/set from the outside via configuration files or from the command line. See the `--configFile` as well as `--configKeyValues` command line options.
+The complete list of parameters and their default values can be inspected in the file `o2sim_configuration.ini` that is produced by an empty run `o2-sim -n 0 -m CAVE`.
+
+Important parameters influencing the transport simulation are:
+
+| Main parameter key | Description |
+| --- | --- |
+| G4 | Parameters influencing the Geant4 engine, such as the physics list. Example "G4.physicsmode=kFTFP_BERT_optical_biasing" |
+| Stack | Parameters influencing the particle stack. Example include whether the stack does kinematics pruning or whether it keeps secondaries at all. |
+| SimCutParams | Parameters allowing to set some sime geometry stepping cuts in R, Z, etc. |
+| Diamond | Parameter allowing to set the interaction vertex location and the spread/width. Is used in all event generators. |
+| Pythia6 | Parameters that influence the pythia6 generator. |
+| Pythia8 | Parameters that influence the pythia8 generator. |
+| HepMC | Parameters that influence the HepMC generator. |
+| TriggerParticle | Parameters influencing the trigger mechanism in particle generators. |
+
+Detectors may also have parameters influencing various pieces such geometry layout, material composition etc.
+
+## Help on available generators
+
+Below some notes on example generators along with some usage info.
+
+* **Fwmugen**
+
+fwmugen is a lightweight and simple “box” generator for forward muons (1 muon / event)
+
+```
+o2-sim -m MFT -e TGeant3 -g fwmugen -n 10
+```
+
+* **BoxGen**
+
+```
+o2-sim -m PIPE ITS MFT -e TGeant3 -g boxgen -n 10 --configKeyValues 'BoxGun.pdg=13 ; BoxGun.eta[0]=-3.6 ; BoxGun.eta[1]=-2.45; BoxGun.number=100'
+```
+This command line will generate 10 events with 100 forward muons.
+
+* **PYTHIA 8**
+
+Configures pythia8 for min.bias pp collisions at 14 TeV
+
+```
+o2-sim -m PIPE ITS MFT -g pythia8pp -n 50
+```
+
+[Describe in detail the environment variables]
+
+## Data layout
+[Add something on data layout of hits file]
+
+## F.A.Q.
+You may contribute to the documentation by asking a question
+
+#### 1. **How can I interface an event generator from ALIROOT**?
+In order to access event generators from ALIROOT, such as `THijing` or `TPyhtia6`, you may use the `-g external` command line option followed by a ROOT macro setting up the event 
+generator. Examples thereof are available in the installation directory `$O2_ROOT/share/Generators/external`.
+
+For example, in order to simulate with 10 Pythia6 events, the following command can be run:
+```
+o2-sim -n 10 -g external --configKeyValues 'GeneratorExternal.fileName=$O2_ROOT/share/Generators/external/pythia6.C'
+```
+Macro arguments can be passed setting `GeneratorExternal.funcName`  
+`GeneratorExternal.funcName=pythia6(14000., "pythia.settings")`.
+
+Users may write there own macros in order to customize to their needs.
+
+#### 2. **How can I run on a subset of geometry modules**?
+Use the `--modules` or `-m` command line option. Example: `o2-sim -m PIPE ITS TPC`
+will run the simulation on a geometry/material consinsting of PIPE, ITS, TPC.
+
+#### 3. **How can I run with exactly the same events as used in an AliRoot simulation?**
+
+One may perform any arbitrary simulation with AliRoot and reuse the kinematics information in form of `Kinemtatics.root`
+produced. The file contains primary and possibly secondary particles (added by transportation). 
+When the file is passed to `o2sim`, the primary particles my be used as the initial event. 
+Use the **`-g extkin`** command line option:
+```
+o2-sim -g extkin --extKinFile Kinematics.root ...
+```
+
+#### 4. **How can I generate events (signal) using the vertex position of already-generated (background) events?**
+
+This process might be called embedding, where one wants to merge two events generated independenly. For that to be physically correct, both events have to originate from the same interaction vertex.
+Assuming that your already-generated (background) events are stored in the `o2sim.background.root` file, you can force the interaction vertex for the generation of a new set of events to be the same as the one in the background with the following command line option:
+
+```
+o2-sim --embedIntoFile o2sim.background.root
+```
+
+Background events are sampled one-by-one until all events have been used. At that point the events start to be reused.
+
+#### 5. **How can I obtain detailed stepping information?** <a name="MCStepLoggerSection"></a>
+Run the simulation (currently only supported in combination with `o2-sim-serial`) with a preloaded library:
+```
+MCSTEPLOG_TTREE=1 LD_PRELOAD=$MCSTEPLOGGER_ROOT/lib/libMCStepLoggerInterceptSteps.so o2-sim-serial -j 1 -n 10
+```
+This will produce a file `MCStepLoggerOutput.root` containing detailed information about steps and processes (where, what, ...). The file can be analysed using a special analysis framework. See https://github.com/AliceO2Group/VMCStepLogger/blob/master/README.md for more documentation.
+
+#### 6. **How can I add a trigger to the event generator?**
+All event generator interfaces that comply with the `o2::eventgen::Generator` protocol can be triggered.
+A basic 'particle trigger' is implemented in the `o2::eventgen` core and allows the user to define a trigger particle.
+The definitions of the trigger particle can be expressed via command line arguments
+```
+o2-sim -g pythia8pp -t particle --configKeyValues "TriggerParticle.pdg=333;TriggerParticle.ptMin=5.;TriggerParticle.yMin=-0.5;TriggerParticle.yMax=0.5"
+```
+
+Custom triggers can also be constructed by the user to provide unlimited flexibility in the trigger needs.
+An external trigger function can be specified via command line arguments
+```
+o2-sim -g pythia8pp -t external --configKeyValues 'TriggerExternal.fileName=path_to_trigger_macro.C;TriggerExternal.funcName="the_function(some, parameters)"'
+```
+The function must comply with a simple protocol and return a lambda function defined as follows
+```
+o2::eventgen::Trigger the_function()
+{
+  return [](const std::vector<TParticle>& particles) -> bool {
+    return true; // triggered
+  }
+}
+```
+Within the lambda function the user receives the stack of generated particles and can inspect it to define a trigger at will.
+The trigger is fired when the lambda function returns `true` and the simulation of the current event is subsequently started.
+
+To allow users to define triggers that go beyond the particle stack generated by the event generator, another functionality is added.
+This allows the user to go deep into the core of the event generator, whenever this is possible.
+For this reason, this is called a 'DeepTrigger'. A 'DeepTrigger' is attached to the simulation in the same way as a normal trigger
+```
+o2-sim -g pythia8pp -t external --configKeyValues 'TriggerExternal.fileName=path_to_deep_trigger_macro.C;TriggerExternal.funcName="the_deep_function(some, parameters)"'
+```
+In this case the function must comply with a similar, but different protocol than before and return a lambda function defined as follows
+``` o2::eventgen::DeepTrigger the_deep_function()
+{
+  return [mpiMin](void* interface, std::string name) -> bool {
