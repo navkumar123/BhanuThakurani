@@ -213,3 +213,6 @@ In this case the function must comply with a similar, but different protocol tha
 ``` o2::eventgen::DeepTrigger the_deep_function()
 {
   return [mpiMin](void* interface, std::string name) -> bool {
+
+
+Hehe I want to add this line.
